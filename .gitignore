@@ -1,3 +1,6 @@
 # Vagrant related stuff
 Vagrantfile
 .vagrant
+
+# Scripts
+*.sh
