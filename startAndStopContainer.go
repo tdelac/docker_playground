@@ -54,7 +54,7 @@ func retrieveOpenPortBinding(containerPtr *docker.Container) (docker.PortBinding
 
 func main() {
 	// Initialize client
-	client, err := docker.NewClient(ENDPOINT)
+	client, err := docker.NewTLSClient(ENDPOINT, "cert.pem", "key.pem", "ca.pem")
 	if err != nil {
 		fmt.Printf("Unable to create client - could be that ENDPOINT is invalid\n")
 		return
@@ -103,7 +103,7 @@ func main() {
 
 	// SSH example
 	testCmd := &command.RemoteCommand{
-		CmdString:      "touch blah.txt",
+		CmdString:      "touch merp.txt",
 		Stdout:         ioutil.Discard,
 		Stderr:         ioutil.Discard,
 		RemoteHostName: HOSTIP,
