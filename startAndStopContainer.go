@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	ENDPOINT   = "unix:///var/run/docker.sock"
+	ENDPOINT   = "tcp://0.0.0.0:2375"
 	CONFIG     = "config/config.yml"
 	HOSTCONFIG = "config/host_config.yml"
 	USER       = "root"
