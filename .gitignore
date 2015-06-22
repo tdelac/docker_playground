@@ -4,3 +4,8 @@ Vagrantfile
 
 # Scripts
 *.sh
+
+# Keys
+*.pem
+*.srl
+*.cnf
