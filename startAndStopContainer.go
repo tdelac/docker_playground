@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	ENDPOINT   = "tcp://0.0.0.0:2375"
+	ENDPOINT   = "tcp://10.4.102.195:2376" // Socket for communication with host (2376 required)
 	CONFIG     = "config/config.yml"
 	HOSTCONFIG = "config/host_config.yml"
-	USER       = "root"
+	USER       = "root"         // Docker container user
+	HOSTIP     = "10.4.102.195" // Machine hosting docker container
 )
 
 func readConfig() (*docker.Config, error) {
@@ -97,7 +98,7 @@ func main() {
 		fmt.Printf("%v\n", err)
 		return
 	}
-	hostIP := portBinding.HostIP
+	//	hostIP := portBinding.HostIP
 	hostPort := portBinding.HostPort
 
 	// SSH example
@@ -105,14 +106,14 @@ func main() {
 		CmdString:      "touch blah.txt",
 		Stdout:         ioutil.Discard,
 		Stderr:         ioutil.Discard,
-		RemoteHostName: hostIP,
+		RemoteHostName: HOSTIP,
 		User:           USER,
-		Options:        []string{"-p", hostPort},
+		Options:        []string{"-p", hostPort, "-o", "StrictHostKeyChecking=no"},
 		Background:     true,
 	}
 	err = testCmd.Run()
 	if err != nil {
-		fmt.Printf("Remote command did not complete successfully\n")
+		fmt.Printf("Remote command did not complete successfully: %v\n", err)
 		return
 	}
 }
