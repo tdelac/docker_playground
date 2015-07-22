@@ -2,9 +2,12 @@ package main
 
 import (
 	"bufio"
+	"encoding/csv"
 	"fmt"
 	"github.com/fsouza/go-dockerclient"
 	"gopkg.in/mgo.v2/bson"
+	"html/template"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -12,20 +15,24 @@ import (
 )
 
 const (
-	ENDPOINT   = "tcp://10.4.102.195:2376"
-	USER       = "ubuntu"
-	HOSTIP     = "10.4.102.195"
-	IMG        = "ubuntu1404/builder"
-	MINPORT    = 22000
-	MAXPORT    = 22500
-	SSHDPort   = "22/tcp"
-	APITimeout = 5
+	ENDPOINT    = "tcp://10.4.102.195:2376"
+	USER        = "ubuntu"
+	HOSTIP      = "10.4.102.195"
+	IMG         = "ubuntu1404/builder"
+	MINPORT     = 22000
+	MAXPORT     = 22500
+	SSHDPort    = "22/tcp"
+	APITimeout  = 5
+	CSVDUMPFILE = "data.csv"
 )
 
 var (
 	client            *docker.Client
 	spawnedContainers map[string]struct{}
 	streamStatsDone   chan bool
+
+	// For data encoding. TODO streamline
+	data [][]string
 )
 
 func generateClient() error {
@@ -225,7 +232,11 @@ func streamStats(containerId string) error {
 		for {
 			retStats, ok := <-stats
 			if ok {
-				fmt.Printf("%v\n", retStats)
+				timeStr := fmt.Sprintf("%v", retStats.Read.Unix())
+				cacheStr := fmt.Sprintf("%v", retStats.MemoryStats.Stats.Cache)
+				data = append(data, []string{timeStr, cacheStr})
+				fmt.Printf("%v\n", timeStr)
+				fmt.Printf("%v\n", cacheStr)
 				continue
 			}
 
@@ -235,6 +246,23 @@ func streamStats(containerId string) error {
 			}
 		}
 	}()
+
+	return nil
+}
+
+func dumpCsv() error {
+	// Create file
+	file, err := os.Create(CSVDUMPFILE)
+	if err != nil {
+		return fmt.Errorf("Csv dump file creation failed: %v", err)
+	}
+
+	// Create csv writer and dump
+	csvWriter := csv.NewWriter(file)
+	err = csvWriter.WriteAll(data)
+	if err != nil {
+		return fmt.Errorf("Writing to csv dump file failed: %v", err)
+	}
 
 	return nil
 }
@@ -263,6 +291,13 @@ func parse(input string) {
 	case "stop stats", "end stats", "kill stats", "no stats":
 		streamStatsDone <- true
 		fmt.Printf("Killed stat streaming\n")
+	case "csv dump":
+		err = dumpCsv()
+		if err != nil {
+			fmt.Printf("%v\n", err)
+			break
+		}
+		fmt.Printf("Successfully dumped csv\n")
 	case "exit", "quit", "bye", "gg":
 		err = cleanUp()
 		if err != nil {
@@ -289,12 +324,15 @@ func parse(input string) {
 
 func initialize() {
 	spawnedContainers = make(map[string]struct{})
+	data = make([][]string, 0)
+	data = append(data, []string{"date", "cache"})
 }
 
 func main() {
 	fmt.Printf("Welcome to the Docker Resource Allocator Playground. Type 'help' for options\n")
 
 	initialize()
+	StartUIServer()
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Printf("$ ")
