@@ -1,1 +1,5 @@
 Image: "eg_sshd"
+ExposedPorts:
+    "23000/tcp":
+    "23001/tcp":
+    "23002/tcp:

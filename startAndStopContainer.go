@@ -90,7 +90,7 @@ func main() {
 	// Retrieve relevant info for ssh
 	containerPtr, err = client.InspectContainer(containerPtr.ID)
 	if err != nil {
-		fmt.Printf("Failed to inspect container: %v\n", err)
+		fmt.Printf("Failed to inspect container: '%s'.  %v\n", containerPtr.ID, err)
 		return
 	}
 	portBinding, err := retrieveOpenPortBinding(containerPtr)
@@ -114,6 +114,23 @@ func main() {
 	err = testCmd.Run()
 	if err != nil {
 		fmt.Printf("Remote command did not complete successfully: %v\n", err)
+		return
+	}
+
+	// Spin down process (stop -> remove)
+	err = client.StopContainer(containerPtr.ID, 5) // 5 second timeout before kill
+	if err != nil {
+		fmt.Printf("Was unable to stop container: '%s'. %v\n", containerPtr.ID, err)
+		return
+	}
+
+	err = client.RemoveContainer(
+		docker.RemoveContainerOptions{
+			ID: containerPtr.ID,
+		},
+	)
+	if err != nil {
+		fmt.Printf("Was unable to remove container: '%s'. %v\n", containerPtr.ID, err)
 		return
 	}
 }
