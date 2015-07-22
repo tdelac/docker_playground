@@ -1,13 +1,12 @@
 package main
 
 import (
+	"./ui"
 	"bufio"
 	"encoding/csv"
 	"fmt"
 	"github.com/fsouza/go-dockerclient"
 	"gopkg.in/mgo.v2/bson"
-	"html/template"
-	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -267,6 +266,11 @@ func dumpCsv() error {
 	return nil
 }
 
+func endDataCollection() {
+	streamStatsDone <- true
+	ui.ImportData(data)
+}
+
 func parse(input string) {
 	var err error
 
@@ -289,7 +293,7 @@ func parse(input string) {
 		}
 		fmt.Printf("Container successfully spawned\n")
 	case "stop stats", "end stats", "kill stats", "no stats":
-		streamStatsDone <- true
+		endDataCollection()
 		fmt.Printf("Killed stat streaming\n")
 	case "csv dump":
 		err = dumpCsv()
@@ -332,7 +336,7 @@ func main() {
 	fmt.Printf("Welcome to the Docker Resource Allocator Playground. Type 'help' for options\n")
 
 	initialize()
-	StartUIServer()
+	ui.StartUIServer()
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Printf("$ ")

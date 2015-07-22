@@ -1,0 +1,27 @@
+<html>
+<head>
+<script type="text/javascript"
+  src="//cdnjs.cloudflare.com/ajax/libs/dygraph/1.1.1/dygraph-combined.js"></script>
+</head>
+<body>
+<div id="graphdiv"></div>
+<script type="text/javascript">
+  {{if .Data}}
+  g = new Dygraph(
+
+    // containing div
+    document.getElementById("graphdiv"),
+
+    // CSV or path to a CSV file.
+    {{range .Data}}
+    {{index . 0}} + "," + {{index . 1}} + "\n" +
+    {{end}} "",
+    {
+      xValueFormatter: Dygraph.dateString_,
+      xValueParser: function(x) { return 1000*parseInt(x); },
+      xTicker: Dygraph.dateTicker 
+    });
+  {{end}}
+</script>
+</body>
+</html>
