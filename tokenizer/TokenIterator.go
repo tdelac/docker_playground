@@ -1,6 +1,7 @@
 package tokenizer
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -35,5 +36,5 @@ func (ti *TokenIterator) Next() (string, error) {
 		ti.input = ti.input[idx:]
 	}
 
-	return token
+	return token, nil
 }
