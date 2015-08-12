@@ -140,49 +140,35 @@ func spawn(imageId string, minPort, maxPort int64) error {
 func cleanUp() error {
 	var err, err2 error
 
-	// Attempt to reach client if connection not established
-	if client == nil {
-		err = generateClient()
-		if err != nil {
-			return fmt.Errorf("Containers may have been left un-reaped: %v", err)
-		}
-	}
-
-	// Stop all running containers spawned by this program
-	runningContainers, err := client.ListContainers(docker.ListContainersOptions{})
-	if err != nil {
-		return fmt.Errorf("Stop containers failed at ListContainers API call: %v", err)
-	}
-	for _, containerInfo := range runningContainers {
-		if _, ok := spawnedContainers[containerInfo.ID]; ok {
-			err2 = client.StopContainer(containerInfo.ID, APITimeout)
+	// Stop running containers spawned by this program
+	running, err2 := getContainers(docker.ListContainersOptions{})
+	if err2 == nil {
+		for _, id := range running {
+			err2 = client.StopContainer(id, APITimeout)
 			if err2 != nil {
-				err = fmt.Errorf("Unable to cleanly stop container %v: %v. ", containerInfo.ID, err2)
+				err = fmt.Errorf("%v Unable to cleanly stop container %v: %v.", err, id, err2)
 			}
 		}
+	} else {
+		err = fmt.Errorf("Unable to get any running containers")
 	}
 
-	// Remove all containers spawned by this program (will force kill any that did not stop previously)
-	existingContainers, err2 := client.ListContainers(
-		docker.ListContainersOptions{
-			All: true,
-		},
-	)
-	if err2 != nil {
-		return fmt.Errorf("Remove containers failed at ListContainers API call: %v. %v", err2, err)
-	}
-	for _, containerInfo := range existingContainers {
-		if _, ok := spawnedContainers[containerInfo.ID]; ok {
+	// Remove existing containers spawned by this program
+	existing, err2 := getContainers(docker.ListContainersOptions{All: true})
+	if err2 == nil {
+		for _, id := range existing {
 			err2 = client.RemoveContainer(
 				docker.RemoveContainerOptions{
-					ID:    containerInfo.ID,
+					ID:    id,
 					Force: true,
 				},
 			)
 			if err2 != nil {
-				err = fmt.Errorf("Unable to remove container %v: %v. ", containerInfo.ID, err2)
+				err = fmt.Errorf("%v Unable to remove container %v: %v.", err, id, err2)
 			}
 		}
+	} else {
+		err = fmt.Errorf("Unable to get any existing containers. %v", err)
 	}
 
 	if err != nil {
@@ -192,7 +178,55 @@ func cleanUp() error {
 	return nil
 }
 
-func streamStats(containerId string) error {
+func streamStats(containerIds []string) error {
+	channelMap := make(map[string]chan *docker.Stats)
+	dataMap := make(map[string]string)
+
+	// To communicate with UI
+	dataStream := make(chan map[string]string)
+	ui.StreamData(dataStream)
+
+	// Launch statistics reaping on each container
+	for _, id := range containerIds {
+		stats := make(chan *docker.Stats, 10) // buffer size is pretty arbitrary
+		channelMap[id] = stats
+
+		go func() {
+			err = client.Stats(
+				docker.StatsOptions{
+					ID:     id,
+					Stats:  stats,
+					Stream: true,
+					//Done: streamStatsDone,
+					Timeout: time.Second * 5,
+				},
+			)
+		}()
+	}
+
+	// Deal with returned stats
+	go func() {
+		for id, channel := range channelMap {
+			select {
+			case data, ok := <-channel:
+				if ok {
+					cacheStr := fmt.Sprintf("%v", data.MemoryStats.Stats.Cache)
+					dataMap[id] = cacheStr
+					fmt.Printf("Container %v returned %v\n", id, cacheStr)
+					if len(dataMap) == len(containerIds) {
+						dataMap["date"] = fmt.Sprintf("%v", time.Now().Unix())
+						dataStream <- dataMap
+						dataMap = make(map[string]string)
+					}
+				} else {
+					dataMap[id] = "0"
+				}
+			}
+		}
+	}()
+}
+
+func streamStats(containerIds []string) error {
 	var err error
 
 	if client == nil {
@@ -200,30 +234,32 @@ func streamStats(containerId string) error {
 	}
 
 	// Initialize channels for communicating statistics
-	stats := make(chan *docker.Stats)
 	streamStatsDone = make(chan bool)
+	stats := make(chan *docker.Stats)
 
-	// Goroutine to execute statistics stuff in background
-	go func() {
-		// Hmm guess we aren't responsible for closing?
-		defer func() {
-			//close(stats)
-			//close(streamStatsDone)
+	// Set up data stream to ui
+	dataStream := make(chan []string, 10)
+	ui.StreamData(dataStream)
+
+	// Start routine and communication channel for each container
+	for _, id := range containerIds {
+		stats = make(chan *docker.Stats)
+		// Goroutine to execute statistics stuff in background
+		go func() {
+			err = client.Stats(
+				docker.StatsOptions{
+					ID:      id,
+					Stats:   stats,
+					Stream:  true,
+					Done:    streamStatsDone,
+					Timeout: time.Second * 5,
+				},
+			)
+			if err != nil {
+				fmt.Printf("Unable to launch stats reporting: %v", err)
+			}
 		}()
-
-		err = client.Stats(
-			docker.StatsOptions{
-				ID:      containerId,
-				Stats:   stats,
-				Stream:  true,
-				Done:    streamStatsDone,
-				Timeout: time.Second * 5,
-			},
-		)
-		if err != nil {
-			fmt.Printf("Unable to launch stats reporting: %v", err)
-		}
-	}()
+	}
 
 	// Get all the datas
 	go func() {
@@ -234,6 +270,7 @@ func streamStats(containerId string) error {
 				timeStr := fmt.Sprintf("%v", retStats.Read.Unix())
 				cacheStr := fmt.Sprintf("%v", retStats.MemoryStats.Stats.Cache)
 				data = append(data, []string{timeStr, cacheStr})
+				dataStream <- []string{timeStr, cacheStr} // Send it off!
 				fmt.Printf("%v\n", timeStr)
 				fmt.Printf("%v\n", cacheStr)
 				continue
@@ -271,6 +308,26 @@ func endDataCollection() {
 	ui.ImportData(data)
 }
 
+func getContainers(opts docker.ListContainersOptions) ([]string, error) {
+	if client == nil {
+		generateClient()
+	}
+
+	allRunning, err := client.ListContainers(opts)
+	if err != nil {
+		return nil, fmt.Errorf("ListContainers API call failed: %v\n", err)
+	}
+
+	ret := make([]string, 0)
+	for _, info := range allRunning {
+		if _, ok := spawnedContainers[info.ID]; ok {
+			ret = append(ret, info.ID)
+		}
+	}
+
+	return ret, nil
+}
+
 func parse(input string) {
 	var err error
 
@@ -302,6 +359,13 @@ func parse(input string) {
 			break
 		}
 		fmt.Printf("Successfully dumped csv\n")
+	case "all stats":
+		running, err := getContainers(docker.ListContainersOptions{})
+		if err != nil {
+			fmt.Printf("%v", err)
+			break
+		}
+		streamStats(running)
 	case "exit", "quit", "bye", "gg":
 		err = cleanUp()
 		if err != nil {
@@ -322,7 +386,7 @@ func parse(input string) {
 			fmt.Printf("Invalid stats command\n")
 			os.Exit(3)
 		}
-		streamStats(cmdSlice[2])
+		streamStats([]string{cmdSlice[2]})
 	}
 }
 
