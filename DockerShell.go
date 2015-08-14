@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"fmt"
 	"github.com/fsouza/go-dockerclient"
+	"gopkg.in/mgo.v2/bson"
 	"gopkg.in/yaml.v2"
 	"io"
 	"io/ioutil"
@@ -12,7 +13,9 @@ import (
 )
 
 const (
-	CONFIG = "./config/shell-config.yml"
+	CONFIG      = "./config/shell-config.yml"
+	SSHDPort    = "22/tcp"
+	KILLTIMEOUT = 5
 )
 
 var (
@@ -82,13 +85,194 @@ func spawnContainer(tokens *tokenizer.TokenIterator) error {
 			return fmt.Errorf("Parse error: %v", err)
 		}
 
-		_ := &docker.HostConfig{}
-		// Populate host config
-		// Create container
-		// Start container
+		// Make a client
+		client, err := generateClient()
+		if err != nil {
+			return fmt.Errorf("Cannot connect to Docker server: %v\n", err)
+		}
+
+		// Create the container
+		containerName := "docker-" + bson.NewObjectId().Hex()
+		container, err := client.CreateContainer(
+			docker.CreateContainerOptions{
+				Name: containerName,
+				Config: &docker.Config{
+					Cmd: []string{"/usr/sbin/sshd", "-D"},
+					ExposedPorts: map[docker.Port]struct{}{
+						SSHDPort: struct{}{},
+					},
+					Image: image,
+				},
+				// Allow Docker to randomly allocate a port
+				HostConfig: &docker.HostConfig{
+					PublishAllPorts: true,
+				},
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("CreateContainer API call failed: %v")
+		}
+		fmt.Printf("\n")
+		fmt.Printf("Created container: %v\n", container.ID)
+
+		// Kick off container
+		err = client.StartContainer(container.ID, nil)
+		if err != nil {
+			// Clean up
+			err2 := client.RemoveContainer(
+				docker.RemoveContainerOptions{
+					ID:    container.ID,
+					Force: true,
+				},
+			)
+			if err2 != nil {
+				err = fmt.Errorf("%v. And was unable to clean up container %v: %v", err, container.ID, err2)
+			}
+			return fmt.Errorf("StartContainer API call failed: %v", err)
+		}
+		fmt.Printf("Started container: %v\n", container.ID)
+		fmt.Printf("\n")
+
+		return nil
 	}
 
 	return fmt.Errorf("Invalid command\n")
+}
+
+func listContainers(tokens *tokenizer.TokenIterator) error {
+	opts := docker.ListContainersOptions{}
+
+	// Check for "all" parameter to the list containers command
+	if tokens.HasNext() {
+		token, err := tokens.Next()
+		if err != nil {
+			return fmt.Errorf("Could not get next token: %v", err)
+		}
+
+		switch token {
+		case "all":
+			opts.All = true
+		default:
+			return fmt.Errorf("Invalid argument to `containers` - `%s`", token)
+		}
+	} else {
+		opts.All = false
+	}
+
+	// Create connection
+	client, err := generateClient()
+	if err != nil {
+		return fmt.Errorf("Cannot connect to Docker server: %v", err)
+	}
+
+	// Retrieve all the containers
+	containers, err := client.ListContainers(opts)
+	if err != nil {
+		return fmt.Errorf("ListContainers API call failed: %v", err)
+	}
+
+	// TODO make better ascii table
+	fmt.Printf("\n")
+	fmt.Printf("ID\t\t\t\t\t\t\t\t\t\tIMAGE\t\t\t\t\tSTATUS\t\t\tPORT\n")
+	for _, container := range containers {
+		fmt.Printf("%v\t\t%v\t\t%v\t\t%v\n", container.ID, container.Image, container.Status, container.Ports)
+	}
+	fmt.Printf("\n")
+
+	return nil
+}
+
+func killContainer(tokens *tokenizer.TokenIterator) error {
+	if tokens.HasNext() {
+		token, err := tokens.Next()
+		if err != nil {
+			return fmt.Errorf("Could not get next token: %v", err)
+		}
+
+		// Create connection
+		client, err := generateClient()
+		if err != nil {
+			return fmt.Errorf("Cannot connect to Docker server: %v", err)
+		}
+
+		// Retrieve containers currently running
+		runningContainers, err := client.ListContainers(
+			docker.ListContainersOptions{},
+		)
+		if err != nil {
+			return fmt.Errorf("ListContainers API call failed: %v", err)
+		}
+
+		// Retrieve containers currently in existence
+		allContainers, err := client.ListContainers(
+			docker.ListContainersOptions{
+				All: true,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("ListContainers API call failed: %v", err)
+		}
+
+		var idsToStop []string
+		var idsToKill []string
+		switch token {
+		case "all":
+			idsToStop = make([]string, 0) // hmm, not sure why len(runningContainers) doesnt work
+			for _, container := range runningContainers {
+				idsToStop = append(idsToStop, container.ID)
+			}
+			idsToKill = make([]string, 0)
+			for _, container := range allContainers {
+				idsToKill = append(idsToKill, container.ID)
+			}
+		default:
+			exists := false
+			for _, container := range runningContainers {
+				if token == container.ID {
+					idsToStop = []string{token}
+					idsToKill = []string{token}
+					exists = true
+				}
+			}
+			if !exists {
+				exists = false
+				for _, container := range allContainers {
+					if token == container.ID {
+						idsToKill = []string{token}
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					fmt.Printf("Container ID does not exist\n")
+				}
+			}
+		}
+
+		// Stop containers
+		for _, id := range idsToStop {
+			if err = client.StopContainer(id, KILLTIMEOUT); err != nil {
+				return fmt.Errorf("StopContainer API call failed: %v", err)
+			}
+		}
+
+		// Remove containers
+		for _, id := range idsToKill {
+			err = client.RemoveContainer(
+				docker.RemoveContainerOptions{
+					ID:    id,
+					Force: true,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("RemoveContainer API call failed: %v", err)
+			}
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("Need to specify what to kill")
 }
 
 func parse(input string) error {
@@ -107,7 +291,9 @@ func parse(input string) error {
 		case "run":
 			err = spawnContainer(tokens)
 		case "containers":
-			fmt.Printf("here are all containers\n")
+			err = listContainers(tokens)
+		case "kill":
+			err = killContainer(tokens)
 		case "exit":
 			return io.EOF
 		default:
