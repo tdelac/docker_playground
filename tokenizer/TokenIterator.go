@@ -9,6 +9,10 @@ type TokenIterator struct {
 	input string
 }
 
+func New(input string) *TokenIterator {
+	return &TokenIterator{input}
+}
+
 func (ti *TokenIterator) HasNext() bool {
 	if ti == nil {
 		return false
@@ -27,7 +31,7 @@ func (ti *TokenIterator) Next() (string, error) {
 		return "", fmt.Errorf("No next token")
 	}
 
-	idx := strings.Index(ti.input, " \n\t")
+	idx := strings.Index(ti.input, " ")
 	if idx == -1 {
 		token = ti.input
 		ti.input = ""

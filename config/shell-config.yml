@@ -1,0 +1,4 @@
+endpoint: "tcp://10.4.102.195:2376"
+cert_path: "./cert.pem"
+key_path: "./key.pem"
+ca_path: "./ca.pem"
